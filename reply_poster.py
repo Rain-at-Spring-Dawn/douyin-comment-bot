@@ -67,8 +67,9 @@ class ReplyPoster:
         """Post a single reply: find 回复 button → click → type → Enter."""
         try:
             # Step 1: Find and click a "回复" button
-            target_btn = self._find_reply_button()
-            if not await target_btn:
+            target_btn_coro = self._find_reply_button()
+            target_btn = await target_btn_coro
+            if not target_btn:
                 return False
 
             await target_btn.click()
