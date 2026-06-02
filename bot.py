@@ -19,8 +19,10 @@ console = Console()
 class DouyinCommentBot:
     """Orchestrates the full pipeline: login → fetch comments → generate replies → post."""
 
-    def __init__(self, headless: bool = False):
+    def __init__(self, headless: bool = False, use_cdp: bool = False):
         self.headless = headless
+        self.use_cdp = use_cdp
+        self.cdp_port = 9222
         self.context: Optional[BrowserContext] = None
         self.login_handler = DouyinLogin()
         self.reply_generator = ReplyGenerator()
@@ -29,74 +31,53 @@ class DouyinCommentBot:
         """Run the full bot pipeline."""
         console.print(Panel.fit(
             "[bold cyan]🎵 抖音评论自动回复机器人[/bold cyan]\n"
-            "[dim]Douyin Comment Auto-Reply Bot[/dim]",
+            f"[dim]模式: {'CDP (连接现有Chrome)' if self.use_cdp else '独立浏览器 (QR登录)'}[/dim]",
             border_style="cyan",
         ))
 
         async with async_playwright() as playwright:
-            # Launch browser
-            console.print("[blue]🚀 启动浏览器...[/blue]")
-            browser = await playwright.chromium.launch(
-                headless=self.headless,
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                ],
-            )
+            if self.use_cdp:
+                # CDP Mode: connect to user's existing Chrome
+                browser = await self._connect_cdp(playwright)
+            else:
+                # Standard mode: launch our own browser
+                browser = await self._launch_browser(playwright)
 
             self.context = await browser.new_context(
                 viewport={"width": 1280, "height": 800},
-                user_agent=(
-                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/120.0.0.0 Safari/537.36"
-                ),
             )
 
             try:
-                # Step 1: Login
-                console.print("\n[bold]📋 Step 1/4: 登录抖音[/bold]")
-                logged_in = await self.login_handler.ensure_login(self.context)
-                if not logged_in:
-                    console.print("[red]❌ 登录失败，终止运行[/red]")
-                    return
+                # Step 1: Login (only needed in standard mode)
+                if not self.use_cdp:
+                    console.print("\n[bold]📋 Step 1/4: 登录抖音[/bold]")
+                    logged_in = await self.login_handler.ensure_login(self.context)
+                    if not logged_in:
+                        console.print("[red]❌ 登录失败，终止运行[/red]")
+                        return
+                else:
+                    console.print("\n[bold]📋 Step 1/4: 使用已有Chrome会话[/bold]")
+                    console.print("[green]  ✅ 已连接你的Chrome浏览器，使用现有登录态[/green]")
 
-                # Create a page for the bot
                 page = await self.context.new_page()
                 fetcher = CommentFetcher(page)
 
                 # Step 2: Fetch video info and comments
                 console.print("\n[bold]📋 Step 2/4: 抓取评论[/bold]")
-                
-                # Resolve short URL if needed
-                if "v.douyin.com" in video_url and not video_url.startswith("http"):
-                    video_url = f"https://{video_url}" if not video_url.startswith("https://") else video_url
-                
-                resolved_url = video_url
-                if "v.douyin.com" in video_url:
-                    console.print("[blue]🔗 解析短链接...[/blue]")
-                    resolved = await fetcher.resolve_short_url(video_url)
-                    if resolved:
-                        resolved_url = resolved
-                        console.print(f"[green]  → 解析到: {resolved_url[:80]}...[/green]")
-                    else:
-                        console.print("[yellow]  ⚠️ 短链接解析失败，直接尝试访问[/yellow]")
 
-                # Fetch video info
+                resolved_url = await self._resolve_url(fetcher, video_url)
                 video_info = await fetcher.fetch_video_info(resolved_url)
                 if not video_info:
                     console.print("[red]❌ 无法获取视频信息[/red]")
                     return
 
-                # Fetch comments
                 comments = await fetcher.fetch_comments(max_comments)
                 if not comments:
                     console.print("[yellow]⚠️ 未抓到评论[/yellow]")
                     return
 
                 # Display comments table
-                table = Table(title="📊 抓取到的评论", show_header=True)
+                table = Table(title=f"📊 抓取到 {len(comments)} 条评论", show_header=True)
                 table.add_column("#", style="dim")
                 table.add_column("用户", style="cyan")
                 table.add_column("评论内容", style="white")
@@ -110,8 +91,7 @@ class DouyinCommentBot:
                 console.print("\n[bold]📋 Step 3/4: 生成AI回复[/bold]")
                 if auto_reply:
                     comments_with_replies = self.reply_generator.batch_generate(
-                        video_info.get("title", ""),
-                        comments,
+                        video_info.get("title", ""), comments,
                     )
                 else:
                     comments_with_replies = comments
@@ -130,10 +110,55 @@ class DouyinCommentBot:
                 console.print(f"[red]❌ 运行出错: {e}[/red]")
                 import traceback
                 console.print(traceback.format_exc())
-
             finally:
-                await browser.close()
+                if not self.use_cdp:
+                    await browser.close()
+                # In CDP mode, don't close the user's browser
 
     async def run_dry(self, video_url: str, max_comments: int = 20):
         """Dry run: fetch comments only, no replies."""
         await self.run(video_url, max_comments, auto_reply=False)
+
+    async def _launch_browser(self, playwright):
+        """Launch a fresh browser instance."""
+        console.print("[blue]🚀 启动独立浏览器...[/blue]")
+        return await playwright.chromium.launch(
+            headless=self.headless,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+            ],
+        )
+
+    async def _connect_cdp(self, playwright):
+        """Connect to user's existing Chrome via CDP."""
+        cdp_url = f"http://127.0.0.1:{self.cdp_port}"
+        console.print(f"[blue]🔗 连接到已有Chrome浏览器 (CDP端口: {self.cdp_port})...[/blue]")
+        console.print(Panel(
+            "[yellow]使用前请确保已用以下命令启动Chrome:[/yellow]\n"
+            f"  [bold]open -a 'Google Chrome' --args --remote-debugging-port={self.cdp_port}[/bold]\n\n"
+            "[dim]或者在终端运行:[/dim]\n"
+            f"  [bold]/Applications/Google\\ Chrome.app/Contents/MacOS/Google\\ Chrome --remote-debugging-port={self.cdp_port}[/bold]",
+        ))
+        try:
+            browser = await playwright.chromium.connect_over_cdp(cdp_url)
+            console.print(f"[green]  ✅ 已连接到Chrome[/green]")
+            return browser
+        except Exception as e:
+            console.print(f"[red]  ❌ 连接失败: {e}[/red]")
+            console.print("[yellow]请确保Chrome已用 --remote-debugging-port 参数启动[/yellow]")
+            raise
+
+    async def _resolve_url(self, fetcher, video_url: str) -> str:
+        """Resolve short URLs to full douyin.com URLs."""
+        if "v.douyin.com" in video_url:
+            if not video_url.startswith("http"):
+                video_url = f"https://{video_url}"
+            console.print("[blue]🔗 解析短链接...[/blue]")
+            resolved = await fetcher.resolve_short_url(video_url)
+            if resolved:
+                console.print(f"[green]  → 解析到: {resolved[:80]}...[/green]")
+                return resolved
+            console.print("[yellow]  ⚠️ 短链接解析失败，直接访问[/yellow]")
+        return video_url

@@ -1,6 +1,5 @@
 """Douyin Comment Bot - CLI entry point."""
 import asyncio
-from pathlib import Path
 
 import typer
 from rich.console import Console
@@ -35,8 +34,8 @@ def run(
     ),
     headless: bool = typer.Option(
         False,
-        "--headless", "-h",
-        help="无头模式 (不显示浏览器窗口)",
+        "--headless",
+        help="无头模式 (不显示浏览器窗口，仅独立浏览器模式有效)",
     ),
     dry_run: bool = typer.Option(
         False,
@@ -48,13 +47,31 @@ def run(
         "--interval", "-i",
         help="每条回复间隔秒数",
     ),
+    cdp: bool = typer.Option(
+        False,
+        "--cdp",
+        help="CDP模式 - 连接你正在使用的Chrome浏览器，使用已有登录态，避免重复登录和验证码",
+    ),
+    cdp_port: int = typer.Option(
+        9222,
+        "--cdp-port",
+        help="CDP调试端口",
+    ),
 ):
-    """🚀 运行抖音评论自动回复机器人"""
+    """🚀 运行抖音评论自动回复机器人
+
+    \b
+    两种模式:
+    - 默认模式: 启动独立浏览器，需扫码登录
+    - --cdp 模式: 连接你已有的Chrome，用现有登录态，避免风控和验证码
+    """
     config.headless = headless
     config.reply_interval_seconds = interval
     config.max_comments_to_reply = max_comments
 
-    bot = DouyinCommentBot(headless=headless)
+    bot = DouyinCommentBot(headless=headless, use_cdp=cdp)
+    if cdp:
+        bot.cdp_port = cdp_port
 
     if dry_run:
         console.print("[yellow]🔍 预览模式：仅抓取评论，不发布回复[/yellow]")
