@@ -17,10 +17,8 @@
 uv sync
 
 # 配置 API Key（用于 AI 回复生成）
-# 编辑 .env 文件：
-#   OPENAI_API_KEY=sk-your-key
-#   OPENAI_BASE_URL=https://api.openai.com/v1
-#   OPENAI_MODEL=gpt-4o-mini
+# 编辑 .env 文件（支持任意兼容 OpenAI 接口的大模型）
+# 详见下方"AI 模型配置"章节
 
 # 预览模式（只抓评论，不回复）
 uv run python main.py run "https://v.douyin.com/xxx" --dry-run
@@ -51,13 +49,47 @@ uv run python main.py run "链接" --max 50 --interval 10 --headless
 
 ## ⚙️ 配置
 
+### 🤖 AI 模型配置（完全自定义）
+
+本项目的 AI 回复生成支持任意兼容 OpenAI API 接口的大模型，**端点、模型名、API Key 均可自由配置**。
+
 通过 `.env` 文件配置：
 
+**OpenAI**
 ```ini
-OPENAI_API_KEY=sk-your-key-here
+OPENAI_API_KEY=sk-xxxxx
 OPENAI_BASE_URL=https://api.openai.com/v1
 OPENAI_MODEL=gpt-4o-mini
 ```
+
+**DeepSeek**
+```ini
+OPENAI_API_KEY=sk-xxxxx
+OPENAI_BASE_URL=https://api.deepseek.com
+OPENAI_MODEL=deepseek-chat
+```
+
+**阶跃星辰（StepFun）**
+```ini
+OPENAI_API_KEY=你的key
+OPENAI_BASE_URL=https://api.stepfun.com/step_plan/v1
+OPENAI_MODEL=step-router-v1
+```
+
+**本地代理 / 其他兼容接口**
+```ini
+OPENAI_API_KEY=随便填
+OPENAI_BASE_URL=http://127.0.0.1:57321/v1
+OPENAI_MODEL=你的模型名
+```
+
+> 只要接口兼容 OpenAI Chat Completion 格式，就可以直接使用。
+>
+> 不配置 API Key 时，机器人会使用预设文案回复，不影响基本功能。
+
+### 浏览器数据目录
+
+登录状态会自动保存在 `browser_data/` 目录下，下次运行无需重复扫码。
 
 ## 📦 项目结构
 
@@ -65,13 +97,15 @@ OPENAI_MODEL=gpt-4o-mini
 douyin-comment-bot/
 ├── main.py              # CLI 入口
 ├── bot.py               # 主控流程编排
-├── config.py            # 配置管理
+├── config.py            # 配置管理（自动加载 .env）
 ├── login.py             # 抖音 QR 扫码登录
 ├── comment_fetcher.py   # 评论抓取模块
 ├── reply_generator.py   # AI 回复生成
 ├── reply_poster.py      # 自动发布回复
-├── .env                 # 环境变量配置
-└── requirements.txt     # 依赖清单
+├── .env                 # 环境变量配置（不提交）
+├── .env.example         # 配置模板
+├── pyproject.toml       # 项目配置 + 依赖
+└── README.md
 ```
 
 ## 🔧 技术栈
@@ -80,6 +114,7 @@ douyin-comment-bot/
 - **Playwright** — 浏览器自动化（登录、评论抓取、回复发布）
 - **OpenAI Python SDK** — AI 回复生成（兼容任何 OpenAI API 接口）
 - **Typer + Rich** — CLI 交互
+- **python-dotenv** — 环境变量管理
 
 ## 🙏 致谢与借鉴
 
@@ -98,7 +133,7 @@ douyin-comment-bot/
 
 ### 其他参考
 
-- [lizeyujack/douyin_auto-reply](https://github.com/lizeyujack/douyin_auto-reply) ⭐5 — 使用 Selenium 自动回复评论的思路参考
+- [lizeyujack/douyin_auto-reply](https://github.com/lizeyujack/douyin_auto-reply) — 使用 Selenium 自动回复评论的思路参考
 
 ## 📄 许可证
 
