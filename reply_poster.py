@@ -1,6 +1,6 @@
-"""Post replies to Douyin comments using Playwright browser automation."""
+"""Post replies to Douyin comments via browser automation."""
 import asyncio
-from typing import List, Optional
+from typing import List
 
 from playwright.async_api import Page
 from rich.console import Console
@@ -11,7 +11,7 @@ console = Console()
 
 
 class ReplyPoster:
-    """Post AI-generated replies to Douyin comments via browser automation."""
+    """Post AI-generated replies by clicking reply button → typing → Enter."""
 
     def __init__(self, page: Page):
         self.page = page
@@ -21,182 +21,122 @@ class ReplyPoster:
         """Post replies to comments. Returns number of successfully posted replies."""
         self.reply_count = 0
 
+        # Scroll to load comments first
+        for _ in range(3):
+            await self.page.evaluate("window.scrollBy(0, 600)")
+            await asyncio.sleep(2)
+
         for i, item in enumerate(comments_with_replies):
             if not item.get("ai_reply"):
                 continue
 
-            console.print(f"\n[blue]📤 [{i+1}/{len(comments_with_replies)}] 回复评论: {item.get('content', '')[:30]}...[/blue]")
+            console.print(f"\n[blue]📤 [{i+1}/{len(comments_with_replies)}] 回复: {item.get('content', '')[:30]}...[/blue]")
 
-            success = await self._post_single_reply(item)
+            success = await self._post_single_reply(item["ai_reply"])
             if success:
                 self.reply_count += 1
                 console.print(f"[green]  ✅ 已回复: {item['ai_reply']}[/green]")
             else:
                 console.print(f"[red]  ❌ 回复失败[/red]")
 
-            # Wait between replies to avoid detection
+            # Wait between replies
             if i < len(comments_with_replies) - 1:
-                wait_time = config.reply_interval_seconds
-                console.print(f"[dim]⏳ 等待 {wait_time} 秒后继续...[/dim]")
-                await asyncio.sleep(wait_time)
+                wait = config.reply_interval_seconds
+                console.print(f"[dim]⏳ 等待 {wait} 秒...[/dim]")
+                await asyncio.sleep(wait)
 
-        console.print(f"\n[bold green]📊 共成功回复 {self.reply_count}/{len(comments_with_replies)} 条评论[/bold green]")
+        console.print(f"\n[bold green]📊 共成功回复 {self.reply_count}/{len(comments_with_replies)} 条[/bold green]")
         return self.reply_count
 
-    async def _post_single_reply(self, item: dict) -> bool:
-        """Post a single reply using browser interaction."""
+    async def _post_single_reply(self, reply_text: str) -> bool:
+        """Post a single reply: find 回复 button → click → type → Enter."""
         try:
-            reply_text = item["ai_reply"]
-            
-            # Strategy 1: Try to find and click the reply button
-            found = await self._try_click_reply_button(item)
-            if not found:
-                console.print("[yellow]  ⚠️ 未找到回复按钮，尝试直接JavaScript注入...[/yellow]")
-                return await self._try_js_reply(item)
+            # Step 1: Check for and dismiss any security verification
+            await self._dismiss_verification_if_needed()
 
-            # Type the reply
-            await asyncio.sleep(1)
-            
-            # Find the reply input and type
-            typed = await self._type_reply(reply_text)
-            if not typed:
-                console.print("[yellow]  ⚠️ 输入框定位失败[/yellow]")
+            # Step 2: Find and click a "回复" button (exact text match)
+            target_btn = await self._find_reply_button()
+            if not target_btn:
+                console.print("[yellow]  ⚠️ 未找到可点击的回复按钮[/yellow]")
                 return False
 
-            # Click send
-            await asyncio.sleep(1)
-            sent = await self._click_send()
-            if not sent:
-                console.print("[yellow]  ⚠️ 发送按钮定位失败[/yellow]")
-                return False
-
+            await target_btn.click()
             await asyncio.sleep(2)
-            return True
+
+            # Step 3: Check if verification appeared after click
+            if await self._is_verification_shown():
+                console.print("[yellow]  ⚠️ 触发安全验证，等待手动处理...[/yellow]")
+                # Wait a bit for user to handle it
+                for _ in range(30):
+                    await asyncio.sleep(1)
+                    if not await self._is_verification_shown():
+                        console.print("[green]  ✅ 验证已通过[/green]")
+                        break
+                else:
+                    console.print("[red]  ❌ 验证超时[/red]")
+                    return False
+
+            # Step 4: Find the DraftEditor
+            draft_editor = self.page.locator(
+                '.public-DraftEditor-content[contenteditable="true"]'
+            ).first
+
+            if not await draft_editor.is_visible(timeout=5000):
+                console.print("[yellow]  ⚠️ 未找到回复输入框[/yellow]")
+                return False
+
+            # Step 5: Click and type
+            await draft_editor.click()
+            await asyncio.sleep(0.5)
+            await draft_editor.type(reply_text, delay=80)
+            await asyncio.sleep(1)
+
+            # Step 6: Press Enter to send
+            await self.page.keyboard.press("Enter")
+            await asyncio.sleep(2)
+
+            # Step 7: Verify - editor should disappear
+            still_visible = await draft_editor.is_visible(timeout=3000)
+            return not still_visible
 
         except Exception as e:
-            console.print(f"[red]  ❌ 回复过程异常: {e}[/red]")
+            console.print(f"[red]  ❌ 回复异常: {e}[/red]")
             return False
 
-    async def _try_click_reply_button(self, item: dict) -> bool:
-        """Try to find and click the reply/comment button for a specific comment."""
-        comment_text = item.get("content", "")
-        
-        # Strategy: Scroll to find the comment text, then look for nearby reply button
-        for attempt in range(3):
+    async def _find_reply_button(self):
+        """Find an available '回复' button."""
+        all_els = self.page.locator('span, div').filter(has_text='回复')
+        count = await all_els.count()
+
+        for i in range(count):
             try:
-                # Find comment element by text content
-                comment_elem = self.page.locator(f"text='{comment_text[:20]}'").first
-                if await comment_elem.is_visible(timeout=3000):
-                    # Get the comment container
-                    comment_container = comment_elem.locator("xpath=ancestor::*[contains(@class, 'comment') or contains(@class, 'dy-comment')][1]")
-                    
-                    if await comment_container.is_visible(timeout=2000):
-                        # Look for reply button inside the container
-                        reply_btn = comment_container.locator(
-                            '[class*="reply"], [class*="comment"], button:has-text("回复"), [class*="icon-reply"]'
-                        ).first
-                        
-                        if await reply_btn.is_visible(timeout=2000):
-                            await reply_btn.click()
-                            await asyncio.sleep(1)
-                            return True
-                
-                # Try scrolling down a bit to find it
-                await self.page.evaluate("window.scrollBy(0, 300)")
+                text = await all_els.nth(i).text_content()
+                if text and text.strip() == "回复":
+                    btn = all_els.nth(i)
+                    if await btn.is_visible():
+                        return btn
+            except Exception:
+                continue
+        return None
+
+    async def _dismiss_verification_if_needed(self):
+        """Check and dismiss any verification popup."""
+        if await self._is_verification_shown():
+            console.print("[yellow]  ⚠️ 检测到安全验证弹窗，请手动完成验证...[/yellow]")
+            # Wait for user to complete it
+            for _ in range(60):
                 await asyncio.sleep(1)
-            except Exception:
-                await asyncio.sleep(1)
-
-        return False
-
-    async def _type_reply(self, text: str) -> bool:
-        """Type reply text into the input field."""
-        try:
-            # Look for reply input
-            input_selectors = [
-                '[class*="reply-input"] textarea',
-                '[class*="reply-input"] input',
-                'textarea[placeholder*="回复"]',
-                'input[placeholder*="回复"]',
-                '[class*="input"] textarea',
-                '[contenteditable="true"]',
-                '.reply-box textarea',
-            ]
-            
-            for selector in input_selectors:
-                try:
-                    input_field = self.page.locator(selector).first
-                    if await input_field.is_visible(timeout=2000):
-                        await input_field.click()
-                        await asyncio.sleep(0.5)
-                        await input_field.fill(text)
-                        return True
-                except Exception:
-                    continue
-
-            # Fallback: try to find any visible textarea/input in the reply area
-            try:
-                active = self.page.locator("textarea, input[type='text'], [contenteditable='true']").last
-                if await active.is_visible(timeout=2000):
-                    await active.click()
-                    await asyncio.sleep(0.5)
-                    await active.fill(text)
+                if not await self._is_verification_shown():
+                    console.print("[green]  ✅ 验证已通过[/green]")
                     return True
-            except Exception:
-                pass
-
+            console.print("[red]  ❌ 验证超时（60秒）[/red]")
             return False
-        except Exception as e:
-            console.print(f"[red]  ❌ 输入回复文本失败: {e}[/red]")
-            return False
+        return True
 
-    async def _click_send(self) -> bool:
-        """Click the send button to post the reply."""
+    async def _is_verification_shown(self) -> bool:
+        """Check if security verification overlay is visible."""
         try:
-            send_selectors = [
-                'button:has-text("发送")',
-                '[class*="send"]',
-                '[class*="submit"]',
-                'button[class*="btn-primary"]',
-            ]
-            
-            for selector in send_selectors:
-                try:
-                    send_btn = self.page.locator(selector).first
-                    if await send_btn.is_visible(timeout=2000) and await send_btn.is_enabled():
-                        await send_btn.click()
-                        return True
-                except Exception:
-                    continue
-
-            # Try pressing Ctrl+Enter or Enter
-            try:
-                active = self.page.locator("textarea, [contenteditable='true']").last
-                if await active.is_visible(timeout=1000):
-                    await active.press("Control+Enter")
-                    return True
-            except Exception:
-                pass
-
-            return False
-        except Exception as e:
-            console.print(f"[red]  ❌ 点击发送失败: {e}[/red]")
-            return False
-
-    async def _try_js_reply(self, item: dict) -> bool:
-        """Fallback: Use JavaScript injection to attempt reply."""
-        reply_text = item["ai_reply"]
-        try:
-            result = await self.page.evaluate(f"""
-                (() => {{
-                    // Try to inject reply via any exposed API
-                    if (window.__douyin && window.__douyin.reply) {{
-                        window.__douyin.reply('{item.get("comment_id", "")}', '{reply_text}');
-                        return true;
-                    }}
-                    return false;
-                }})()
-            """)
-            return bool(result)
+            mask = self.page.locator('.second-verify-mask').first
+            return await mask.is_visible(timeout=1000)
         except Exception:
             return False
