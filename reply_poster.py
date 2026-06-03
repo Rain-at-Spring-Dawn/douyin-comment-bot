@@ -1,6 +1,6 @@
 """Post replies to Douyin comments via browser automation."""
 import asyncio
-from typing import List
+from typing import List, Dict, Any
 
 from playwright.async_api import Page
 from rich.console import Console
@@ -8,6 +8,7 @@ from rich.panel import Panel
 from datetime import datetime
 
 from config import config
+from src.utils.path_utils import get_screenshot_path
 
 console = Console()
 
@@ -20,8 +21,15 @@ class ReplyPoster:
         self.reply_count = 0
         self.skip_count = 0
 
-    async def post_replies(self, comments_with_replies: List[dict]) -> int:
-        """Post replies to comments. Returns number of successfully posted replies."""
+    async def post_replies(self, comments_with_replies: List[Dict[str, Any]]) -> int:
+        """Post replies to comments. Returns number of successfully posted replies.
+        
+        Args:
+            comments_with_replies: List of comments with AI-generated replies
+            
+        Returns:
+            int: Number of successfully posted replies
+        """
         self.reply_count = 0
         self.skip_count = 0
 
@@ -64,7 +72,14 @@ class ReplyPoster:
         return self.reply_count
 
     async def _post_single_reply(self, reply_text: str) -> bool:
-        """Post a single reply: find 回复 button → click → type → Enter."""
+        """Post a single reply: find 回复 button → click → type → Enter.
+        
+        Args:
+            reply_text: The reply text to post
+            
+        Returns:
+            bool: True if reply was successfully posted, False otherwise
+        """
         try:
             # Step 1: Find and click a "回复" button
             target_btn_coro = self._find_reply_button()
@@ -139,18 +154,25 @@ class ReplyPoster:
 
     async def _wait_for_verification(self, timeout: int = 300) -> bool:
         """Wait for security verification to be completed by user.
-        Returns True when verification is gone, False on timeout."""
+        
+        Returns True when verification is gone, False on timeout.
+        
+        Args:
+            timeout: Maximum wait time in seconds, default 300 (5 minutes)
+            
+        Returns:
+            bool: True if verification completed, False if timeout
+        """
         if not await self._is_verification_shown():
             return True
 
-        # Take a screenshot to help user see
+        # Take a screenshot to help user see (✅ 使用跨平台路径)
         try:
-            timestamp = datetime.now().strftime("%H%M%S")
-            path = f"/Users/mouwenhu/Desktop/抖音验证_{timestamp}.png"
+            path = get_screenshot_path("抖音验证")
             await self.page.screenshot(path=path)
             console.print(f"[dim]已截图保存到: {path}[/dim]")
-        except Exception:
-            pass
+        except Exception as e:
+            console.print(f"[yellow]⚠️ 截图失败: {e}[/yellow]")
 
         console.print(f"[yellow]⏳ 等待验证完成（最长{timeout}秒）...[/yellow]")
         for i in range(timeout):
@@ -165,7 +187,11 @@ class ReplyPoster:
         return False
 
     async def _is_verification_shown(self) -> bool:
-        """Check if security verification overlay is visible."""
+        """Check if security verification overlay is visible.
+        
+        Returns:
+            bool: True if verification dialog is shown, False otherwise
+        """
         try:
             # Check for various verification popup patterns
             selectors = [
